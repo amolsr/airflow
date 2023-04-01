@@ -23,10 +23,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
 from rich.console import Console
 
 AIRFLOW_SOURCES_ROOT = Path(__file__).parents[2].resolve()
-
+AIRFLOW_PROVIDERS_ROOT = AIRFLOW_SOURCES_ROOT / "airflow" / "providers"
 console = Console(width=400, color_system="standard")
 
 
@@ -48,12 +49,41 @@ def remove_packages_missing_on_arm():
     subprocess.run(["pip", "uninstall", "-y"] + all_dependencies_to_remove)
 
 
+def get_suspended_providers_folders() -> list[str]:
+    """
+    Returns a list of suspended providers folders that should be
+    skipped when running tests (without any prefix - for example apache/beam, yandex, google etc.).
+    """
+    suspended_providers = []
+    for provider_path in AIRFLOW_PROVIDERS_ROOT.glob("**/provider.yaml"):
+        provider_yaml = yaml.safe_load(provider_path.read_text())
+        if provider_yaml.get("suspended"):
+            suspended_providers.append(
+                provider_path.parent.relative_to(AIRFLOW_SOURCES_ROOT)
+                .as_posix()
+                .replace("airflow/providers/", "")
+            )
+    return suspended_providers
+
+
 if __name__ == "__main__":
     arm = False
     if len(sys.argv) > 1 and sys.argv[1].lower() == "arm":
         arm = True
         remove_packages_missing_on_arm()
-    result = subprocess.run(["pytest", "--collect-only", "-qqqq", "--disable-warnings", "tests"], check=False)
+    suspended_providers = get_suspended_providers_folders()
+    cmd = [
+        "pytest",
+        *[f"--ignore=tests/providers/{provider}" for provider in suspended_providers],
+        *[f"--ignore=tests/system/providers/{provider}" for provider in suspended_providers],
+        *[f"--ignore=tests/integration/providers/{provider}" for provider in suspended_providers],
+        "--collect-only",
+        "-qqqq",
+        "--disable-warnings",
+        "tests",
+    ]
+    console.print(f"Running command {cmd}")
+    result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         console.print("\n[red]Test collection failed.")
         if arm:
